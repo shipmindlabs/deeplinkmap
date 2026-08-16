@@ -1,0 +1,20 @@
+{
+  "name": "deeplinkmap",
+  "version": "0.0.0",
+  "description": "A typed deep-link routing table that validates every parameter, refuses foreign hosts, and holds links that arrive before the app can act on them.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "exports": { ".": "./src/index.ts" },
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "demo": "node example/demo.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.4",
+    "typescript": "^7.0.2"
+  },
+  "keywords": ["react-native", "deep-linking", "universal-links", "routing", "validation"]
+}
