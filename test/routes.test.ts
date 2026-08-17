@@ -92,6 +92,13 @@ test("something that is not a URL at all is refused", () => {
   assert.equal(refused("not a url").reason, "unparseable");
 });
 
+// A parser of untrusted input must never throw: an uncaught URIError in a
+// Linking handler takes the whole app down on a link anyone can send.
+test("a malformed percent-sequence is refused, not thrown", () => {
+  assert.equal(refused("https://example.com/order/%zz").reason, "bad-parameter");
+  assert.equal(refused("https://example.com/order/%E0%A4%A").reason, "bad-parameter");
+});
+
 // A screen that reads an unexpected query parameter is reading a stranger's
 // input.
 test("undeclared query parameters are dropped, declared ones validated", () => {

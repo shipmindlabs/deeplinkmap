@@ -211,7 +211,15 @@ function capture(pattern: string, path: string): Record<string, string> | null {
   for (const [index, segment] of wanted.entries()) {
     const actual = got[index]!;
     if (segment.startsWith(":")) {
-      captured[segment.slice(1)] = decodeURIComponent(actual);
+      // decodeURIComponent throws on a malformed sequence like "%zz", and a
+      // parser of untrusted input must never throw — an uncaught URIError in a
+      // Linking handler takes the whole app down on a link anyone can send.
+      // Undecodable means unmatchable; the kind check will refuse the raw text.
+      try {
+        captured[segment.slice(1)] = decodeURIComponent(actual);
+      } catch {
+        captured[segment.slice(1)] = actual;
+      }
       continue;
     }
     if (segment.toLowerCase() !== actual.toLowerCase()) return null;
