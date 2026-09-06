@@ -25,8 +25,15 @@ export type ParamKind = "string" | "number" | "uuid" | "slug";
 
 export type ParamSpec = {
   readonly kind: ParamKind;
+  /** Refuse anything shorter. Defaults to one character. */
+  readonly minLength?: number;
   /** Refuse anything longer. Defaults to 128 characters. */
   readonly maxLength?: number;
+  /** Closed range for a "number". Refused on any other kind. */
+  readonly min?: number;
+  readonly max?: number;
+  /** The complete set of accepted values. Anything else is refused. */
+  readonly oneOf?: readonly (string | number)[];
 };
 
 export type Route<Name extends string = string> = {
@@ -81,6 +88,7 @@ const PATTERNS: Record<ParamKind, RegExp> = {
   slug: /^[a-z0-9]+(?:-[a-z0-9]+)*$/i,
 };
 
+const DEFAULT_MIN_LENGTH = 1;
 const DEFAULT_MAX_LENGTH = 128;
 
 function spec(value: ParamSpec | ParamKind): ParamSpec {
@@ -92,22 +100,39 @@ export class Router<Name extends string = string> {
   #options: RouterOptions;
 
   constructor(routes: readonly Route<Name>[], options: RouterOptions = {}) {
+    const names = new Set<string>();
     for (const route of routes) {
+      if (names.has(route.name)) {
+        throw new InvalidRoute(`route "${route.name}" is declared twice`);
+      }
+      names.add(route.name);
+
+      const declared = placeholders(route.pattern);
+      const repeated = declared.find((name, index) => declared.indexOf(name) !== index);
+      if (repeated) {
+        throw new InvalidRoute(
+          `route "${route.name}" has :${repeated} in its pattern more than once`,
+        );
+      }
       // Every placeholder must be declared. An undeclared one would otherwise
       // arrive as an unvalidated string, which is the hole this closes.
-      for (const placeholder of placeholders(route.pattern)) {
+      for (const placeholder of declared) {
         if (!route.params?.[placeholder]) {
           throw new InvalidRoute(
             `route "${route.name}" has :${placeholder} in its pattern but does not declare it`,
           );
         }
       }
-      for (const declared of Object.keys(route.params ?? {})) {
-        if (!placeholders(route.pattern).includes(declared)) {
+      for (const [key, declaration] of Object.entries(route.params ?? {})) {
+        if (!declared.includes(key)) {
           throw new InvalidRoute(
-            `route "${route.name}" declares "${declared}" but its pattern has no :${declared}`,
+            `route "${route.name}" declares "${key}" but its pattern has no :${key}`,
           );
         }
+        check(route.name, `:${key}`, spec(declaration));
+      }
+      for (const [key, declaration] of Object.entries(route.query ?? {})) {
+        check(route.name, `?${key}`, spec(declaration));
       }
     }
     this.#routes = [...routes];
@@ -145,11 +170,18 @@ export class Router<Name extends string = string> {
       const captured = capture(route.pattern, path);
       if (!captured) continue;
 
+      // Nothing is handed back until every parameter has passed. A refusal
+      // halfway through leaves the caller with a refusal, not half a screen.
       const params: Record<string, string | number> = {};
       for (const [key, raw] of Object.entries(captured)) {
-        const checked = validate(raw, spec(route.params![key]!));
+        const declaration = spec(route.params![key]!);
+        const checked = validate(raw, declaration);
         if (checked === null) {
-          return refuse("bad-parameter", `${key}="${raw}" is not a valid ${describe(route, key)}`, url);
+          return refuse(
+            "bad-parameter",
+            `${key}="${raw}" is not ${describe(declaration)}`,
+            url,
+          );
         }
         params[key] = checked;
       }
@@ -163,7 +195,11 @@ export class Router<Name extends string = string> {
         if (raw === null) continue;
         const checked = validate(raw, spec(declaration));
         if (checked === null) {
-          return refuse("bad-parameter", `?${key}="${raw}" is not valid`, url);
+          return refuse(
+            "bad-parameter",
+            `?${key}="${raw}" is not ${describe(spec(declaration))}`,
+            url,
+          );
         }
         query[key] = checked;
       }
@@ -190,8 +226,53 @@ function refuse(reason: Refusal["reason"], detail: string, url: string): Resolut
   return { ok: false, refusal: { reason, detail, url } };
 }
 
-function describe(route: Route, key: string): string {
-  return spec(route.params![key]!).kind;
+/**
+ * A constraint that refuses everything — a maximum below its minimum, a value
+ * set its own kind rejects — describes a route that can never open. Saying so
+ * when the table is built beats a link mysteriously going nowhere in the field.
+ */
+function check(route: string, where: string, declaration: ParamSpec): void {
+  const fail = (detail: string): never => {
+    throw new InvalidRoute(`route "${route}" parameter ${where} ${detail}`);
+  };
+
+  if (!(declaration.kind in PATTERNS)) fail(`has unknown kind "${declaration.kind}"`);
+
+  const minLength = declaration.minLength ?? DEFAULT_MIN_LENGTH;
+  const maxLength = declaration.maxLength ?? DEFAULT_MAX_LENGTH;
+  if (minLength < 1) fail(`has minLength ${minLength}, below one`);
+  if (maxLength < minLength) fail(`has maxLength ${maxLength} below minLength ${minLength}`);
+
+  const bounded = declaration.min !== undefined || declaration.max !== undefined;
+  if (bounded && declaration.kind !== "number") {
+    fail(`has min/max, which only apply to a number, not a ${declaration.kind}`);
+  }
+  if (
+    declaration.min !== undefined &&
+    declaration.max !== undefined &&
+    declaration.min > declaration.max
+  ) {
+    fail(`has min ${declaration.min} above max ${declaration.max}`);
+  }
+
+  if (declaration.oneOf) {
+    if (declaration.oneOf.length === 0) fail("has an empty oneOf, so nothing can match");
+    for (const value of declaration.oneOf) {
+      if (validate(String(value), { ...declaration, oneOf: undefined }) === null) {
+        fail(`lists ${JSON.stringify(value)} in oneOf, which its own kind and limits refuse`);
+      }
+    }
+  }
+}
+
+function describe(declaration: ParamSpec): string {
+  if (declaration.oneOf) {
+    return `one of ${declaration.oneOf.map((value) => JSON.stringify(value)).join(", ")}`;
+  }
+  if (declaration.min !== undefined || declaration.max !== undefined) {
+    return `a number from ${declaration.min ?? "any"} to ${declaration.max ?? "any"}`;
+  }
+  return `a valid ${declaration.kind}`;
 }
 
 function placeholders(pattern: string): string[] {
@@ -228,12 +309,20 @@ function capture(pattern: string, path: string): Record<string, string> | null {
 }
 
 function validate(raw: string, declaration: ParamSpec): string | number | null {
+  const minLength = declaration.minLength ?? DEFAULT_MIN_LENGTH;
   const maxLength = declaration.maxLength ?? DEFAULT_MAX_LENGTH;
-  if (raw.length === 0 || raw.length > maxLength) return null;
+  if (raw.length < minLength || raw.length > maxLength) return null;
   if (!PATTERNS[declaration.kind].test(raw)) return null;
+
+  let value: string | number = raw;
   if (declaration.kind === "number") {
-    const value = Number(raw);
-    return Number.isSafeInteger(value) ? value : null;
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed)) return null;
+    if (declaration.min !== undefined && parsed < declaration.min) return null;
+    if (declaration.max !== undefined && parsed > declaration.max) return null;
+    value = parsed;
   }
-  return raw;
+
+  if (declaration.oneOf && !declaration.oneOf.includes(value)) return null;
+  return value;
 }

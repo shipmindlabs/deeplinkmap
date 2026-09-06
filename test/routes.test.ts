@@ -17,14 +17,31 @@ const routes: Route[] = [
 
 const router = new Router(routes, { schemes: ["myapp"], hosts: ["example.com"] });
 
-function matched(url: string): Match {
-  const resolution = router.resolve(url);
+const constrained = new Router(
+  [
+    { name: "page", pattern: "/page/:n", params: { n: { kind: "number", min: 1, max: 99 } } },
+    {
+      name: "receipt",
+      pattern: "/receipt/:format",
+      params: { format: { kind: "string", oneOf: ["pdf", "html"] } },
+    },
+    {
+      name: "search",
+      pattern: "/search",
+      query: { q: { kind: "string", minLength: 3, maxLength: 20 } },
+    },
+  ],
+  { hosts: ["example.com"] },
+);
+
+function matched(url: string, using: Router = router): Match {
+  const resolution = using.resolve(url);
   assert.equal(resolution.ok, true, `expected ${url} to resolve`);
   return (resolution as { ok: true; match: Match }).match;
 }
 
-function refused(url: string) {
-  const resolution = router.resolve(url);
+function refused(url: string, using: Router = router) {
+  const resolution = using.resolve(url);
   assert.equal(resolution.ok, false, `expected ${url} to be refused`);
   return (resolution as { ok: false; refusal: { reason: string; detail: string } }).refusal;
 }
@@ -67,6 +84,27 @@ test("a well-formed uuid and slug get through", () => {
 
 test("an absurdly long parameter is refused before it reaches a screen", () => {
   assert.equal(refused(`https://example.com/article/${"a".repeat(500)}`).reason, "bad-parameter");
+});
+
+// A kind says what a value looks like; a constraint says which of those values
+// this screen actually has.
+test("a number outside its declared range is refused", () => {
+  assert.equal(matched("https://example.com/page/7", constrained).params.n, 7);
+  assert.equal(refused("https://example.com/page/0", constrained).reason, "bad-parameter");
+  assert.equal(refused("https://example.com/page/100", constrained).reason, "bad-parameter");
+});
+
+test("a value outside the declared set is refused", () => {
+  assert.equal(matched("https://example.com/receipt/pdf", constrained).params.format, "pdf");
+  const refusal = refused("https://example.com/receipt/csv", constrained);
+  assert.equal(refusal.reason, "bad-parameter");
+  assert.match(refusal.detail, /"pdf"/);
+});
+
+test("a query parameter carries its own constraints", () => {
+  assert.equal(matched("https://example.com/search?q=deep", constrained).query.q, "deep");
+  assert.equal(refused("https://example.com/search?q=ab", constrained).reason, "bad-parameter");
+  assert.deepEqual(matched("https://example.com/search", constrained).query, {});
 });
 
 // An https link to a host this app does not own is somebody else's link.
@@ -123,6 +161,41 @@ test("an undeclared placeholder is a build-time error", () => {
   );
   assert.throws(
     () => new Router([{ name: "bad", pattern: "/thing", params: { id: "number" } }]),
+    InvalidRoute,
+  );
+});
+
+// A constraint that refuses everything describes a route that can never open.
+test("a constraint that contradicts itself is a build-time error", () => {
+  const impossible = [
+    { name: "range", pattern: "/a/:n", params: { n: { kind: "number", min: 10, max: 1 } } },
+    { name: "bounded-slug", pattern: "/b/:n", params: { n: { kind: "slug", min: 1 } } },
+    { name: "wrong-set", pattern: "/c/:n", params: { n: { kind: "number", oneOf: ["pdf"] } } },
+    {
+      name: "lengths",
+      pattern: "/d/:n",
+      params: { n: { kind: "string", minLength: 9, maxLength: 4 } },
+    },
+    { name: "empty-set", pattern: "/e/:n", params: { n: { kind: "string", oneOf: [] } } },
+    { name: "query", pattern: "/f", query: { q: { kind: "number", min: 3, max: 2 } } },
+  ] satisfies Route[];
+
+  for (const route of impossible) {
+    assert.throws(() => new Router([route]), InvalidRoute, route.name);
+  }
+});
+
+test("a table that cannot be read unambiguously is a build-time error", () => {
+  assert.throws(
+    () => new Router([{ name: "twins", pattern: "/a/:id/:id", params: { id: "number" } }]),
+    InvalidRoute,
+  );
+  assert.throws(
+    () =>
+      new Router([
+        { name: "twice", pattern: "/a" },
+        { name: "twice", pattern: "/b" },
+      ]),
     InvalidRoute,
   );
 });

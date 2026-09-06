@@ -9,8 +9,11 @@ checks is not one.
 $ npm run demo
   https://example.com/order/4711        -> order params={"id":4711} (sign in first)
   myapp://article/hello-world?ref=…     -> article params={"slug":"hello-world"} query={"ref":"newsletter"}
+  https://example.com/receipt/3f25…/pdf -> receipt params={"id":"3f25…","format":"pdf"}
   https://example.com/order/abc         refused: bad-parameter
   https://example.com/order/1%20OR%201%3D1  refused: bad-parameter
+  https://example.com/order/-3          refused: bad-parameter
+  https://example.com/receipt/3f25…/csv refused: bad-parameter
   https://evil.example.net/order/1      refused: foreign-host
   otherapp://order/1                    refused: unknown-scheme
   https://example.com/admin/danger      refused: no-route
@@ -24,6 +27,8 @@ $ npm run demo
 far. Every placeholder must declare its kind — `string`, `number`, `uuid` or
 `slug` — and a route with an undeclared placeholder **fails at construction**,
 because an undeclared one would arrive as an unvalidated string from a stranger.
+A refusal is returned whole: no screen is ever handed a half-filled parameter
+object.
 
 **A link to a host this app does not own is refused.** Following one is how an
 app becomes an open redirect wearing a native UI.
@@ -34,13 +39,40 @@ how a stranger's link lands on a screen nobody meant to expose.
 Query parameters are allow-listed too: declared ones are validated, everything
 else is dropped rather than passed on.
 
+## Kinds and constraints
+
+A kind says what a value looks like; a constraint says which of those values the
+screen actually has.
+
+| | |
+|---|---|
+| `kind` | `string`, `number`, `uuid`, `slug` |
+| `minLength` / `maxLength` | length bounds, `1` and `128` by default |
+| `min` / `max` | closed range, `number` only |
+| `oneOf` | the complete set of accepted values |
+
+A constraint that refuses everything — `min` above `max`, a `oneOf` value its
+own kind rejects, `min` on a slug, a repeated or duplicated route — throws
+`InvalidRoute` when the table is built, rather than sending links quietly
+nowhere in the field.
+
 ## Use
 
 ```ts
 const router = new Router(
   [
-    { name: "order", pattern: "/order/:id", params: { id: "number" }, requiresAuth: true },
+    {
+      name: "order",
+      pattern: "/order/:id",
+      params: { id: { kind: "number", min: 1 } },
+      requiresAuth: true,
+    },
     { name: "article", pattern: "/article/:slug", params: { slug: "slug" }, query: { ref: "slug" } },
+    {
+      name: "receipt",
+      pattern: "/receipt/:id/:format",
+      params: { id: "uuid", format: { kind: "string", oneOf: ["pdf", "html"] } },
+    },
   ],
   { schemes: ["myapp"], hosts: ["example.com"] },
 );
@@ -89,7 +121,7 @@ given universal link at all is decided by `apple-app-site-association` and
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds and a length limit, allow-listed query parameters, host and scheme allow-lists, refusal reasons, build-time route checking, pending links with expiry |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host and scheme allow-lists, refusal reasons, build-time checking of the table and its constraints, pending links with expiry |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development
@@ -102,4 +134,4 @@ npm run typecheck
 
 ## License
 
-MIT
+MIT — built and maintained by [Shipmind Labs](https://shipmindlabs.com).
