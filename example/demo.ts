@@ -1,5 +1,5 @@
 /**
- * Eleven links arrive from outside the app. Five are fine.
+ * Twelve links arrive from outside the app. Five are fine.
  *
  *   npm run demo
  */
@@ -7,7 +7,7 @@
 import { PendingLink, Router, type Route } from "../src/index.ts";
 
 const routes: Route[] = [
-  { name: "home", pattern: "/" },
+  { name: "home", pattern: "/", accepts: ["universal", "scheme"] },
   {
     name: "order",
     pattern: "/order/:id",
@@ -19,6 +19,7 @@ const routes: Route[] = [
     pattern: "/article/:slug",
     params: { slug: "slug" },
     query: { ref: "slug" },
+    accepts: ["universal", "scheme"],
   },
   {
     name: "receipt",
@@ -27,22 +28,26 @@ const routes: Route[] = [
   },
 ];
 
-const router = new Router(routes, { schemes: ["myapp"], hosts: ["example.com"] });
+const router = new Router(routes, {
+  schemes: ["myapp"],
+  hosts: ["example.com", "*.example.com"],
+});
 
 const receipt = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 
 const arriving = [
   "https://example.com/order/4711",
   "myapp://article/hello-world?ref=newsletter&utm_source=spam",
+  "https://app.example.com/article/hello-world",
   `https://example.com/receipt/${receipt}/pdf`,
-  "https://example.com/order/abc",
-  "https://example.com/order/1%20OR%201%3D1",
-  "https://example.com/order/-3",
-  `https://example.com/receipt/${receipt}/csv`,
+  "https://example.com/",
+  "myapp://order/4711",
+  "http://example.com/order/4711",
+  "https://example.com.evil.net/order/1",
   "https://evil.example.net/order/1",
   "otherapp://order/1",
+  "https://example.com/order/abc",
   "https://example.com/admin/danger",
-  "https://example.com/",
 ];
 
 for (const url of arriving) {

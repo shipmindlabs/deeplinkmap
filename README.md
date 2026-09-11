@@ -9,18 +9,19 @@ checks is not one.
 $ npm run demo
   https://example.com/order/4711        -> order params={"id":4711} (sign in first)
   myapp://article/hello-world?ref=…     -> article params={"slug":"hello-world"} query={"ref":"newsletter"}
+  https://app.example.com/article/hel…  -> article params={"slug":"hello-world"}
   https://example.com/receipt/3f25…/pdf -> receipt params={"id":"3f25…","format":"pdf"}
-  https://example.com/order/abc         refused: bad-parameter
-  https://example.com/order/1%20OR%201%3D1  refused: bad-parameter
-  https://example.com/order/-3          refused: bad-parameter
-  https://example.com/receipt/3f25…/csv refused: bad-parameter
+  https://example.com/                  -> home
+  myapp://order/4711                    refused: form-not-accepted
+  http://example.com/order/4711         refused: insecure-scheme
+  https://example.com.evil.net/order/1  refused: foreign-host
   https://evil.example.net/order/1      refused: foreign-host
   otherapp://order/1                    refused: unknown-scheme
+  https://example.com/order/abc         refused: bad-parameter
   https://example.com/admin/danger      refused: no-route
-  https://example.com/                  -> home
 ```
 
-## Three refusals
+## What gets refused
 
 **Parameters are validated before a screen sees them.** `:id` declared as
 `number` reaches the screen as a number, and `/order/1 OR 1=1` never gets that
@@ -30,14 +31,41 @@ because an undeclared one would arrive as an unvalidated string from a stranger.
 A refusal is returned whole: no screen is ever handed a half-filled parameter
 object.
 
-**A link to a host this app does not own is refused.** Following one is how an
-app becomes an open redirect wearing a native UI.
+**A link to a host this app does not own is refused**, and so is a link through
+a door the route does not open to. Following the first is how an app becomes an
+open redirect wearing a native UI.
 
 **A link that matches nothing goes nowhere.** Opening "whatever matched last" is
 how a stranger's link lands on a screen nobody meant to expose.
 
 Query parameters are allow-listed too: declared ones are validated, everything
 else is dropped rather than passed on.
+
+## Hosts and schemes
+
+The two doors are not equally trustworthy. A universal link is one the operating
+system checked against a host that serves `apple-app-site-association` or
+`assetlinks.json` naming this app. A custom scheme is checked by nobody: any
+installed app can also register `myapp://`, and any web page can link to it. So
+the door a link came through is part of what it is allowed to do, and a route
+carrying a reset token or reaching a signed-in screen can decline the unverified
+one.
+
+| | |
+|---|---|
+| `hosts` | `example.com`, or `*.example.com` for exactly one label below it |
+| `schemes` | custom schemes, e.g. `myapp`; `http`/`https` belong in `hosts` |
+| `accepts` | `universal`, `scheme` or both — per route, defaulting to `universal` |
+| `allowInsecure` | accept `http` as well as `https`; off by default |
+
+A host is compared whole: `example.com.evil.net` ends with the declared host and
+is somebody else's site, which is exactly what a `startsWith`/`endsWith` check
+lets in. An allow-list that cannot mean what it says — `*`, `*.com`, a URL where
+a hostname belongs, a route open to no door at all — throws when the router is
+built.
+
+Refusal reasons: `unparseable`, `insecure-scheme`, `foreign-host`,
+`unknown-scheme`, `form-not-accepted`, `no-route`, `bad-parameter`.
 
 ## Kinds and constraints
 
@@ -67,14 +95,17 @@ const router = new Router(
       params: { id: { kind: "number", min: 1 } },
       requiresAuth: true,
     },
-    { name: "article", pattern: "/article/:slug", params: { slug: "slug" }, query: { ref: "slug" } },
     {
-      name: "receipt",
-      pattern: "/receipt/:id/:format",
-      params: { id: "uuid", format: { kind: "string", oneOf: ["pdf", "html"] } },
+      name: "article",
+      pattern: "/article/:slug",
+      params: { slug: "slug" },
+      query: { ref: "slug" },
+      accepts: ["universal", "scheme"],
     },
+    // No accepts: a reset token only arrives through a verified link.
+    { name: "reset", pattern: "/reset/:token", params: { token: "uuid" } },
   ],
-  { schemes: ["myapp"], hosts: ["example.com"] },
+  { schemes: ["myapp"], hosts: ["example.com", "*.example.com"] },
 );
 
 Linking.addEventListener("url", ({ url }) => {
@@ -115,13 +146,14 @@ obvious next thing and is not here yet.
 
 **Not app-side link verification.** Whether iOS or Android will hand your app a
 given universal link at all is decided by `apple-app-site-association` and
-`assetlinks.json`, on your server. This validates what does arrive.
+`assetlinks.json`, on your server. This validates what does arrive, and lets a
+route say it wants only what came through that verified door.
 
 ## Status
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host and scheme allow-lists, refusal reasons, build-time checking of the table and its constraints, pending links with expiry |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, pending links with expiry |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development

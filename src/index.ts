@@ -4,8 +4,10 @@
  */
 
 export {
+  InvalidPolicy,
   InvalidRoute,
   Router,
+  type LinkForm,
   type Match,
   type ParamKind,
   type ParamSpec,
