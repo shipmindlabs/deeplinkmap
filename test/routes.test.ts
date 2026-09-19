@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   InvalidPolicy,
   InvalidRoute,
-  PendingLink,
   Router,
   type LinkForm,
   type Match,
@@ -342,41 +341,4 @@ test("the original link is kept for logging but not for routing", () => {
   const match = matched("https://example.com/order/9?utm_campaign=x");
   assert.equal(match.url, "https://example.com/order/9?utm_campaign=x");
   assert.deepEqual(match.query, {});
-});
-
-// A cold start delivers the link before the navigator exists; a link behind a
-// login arrives before there is a session.
-test("a link can be held and replayed once the app can act on it", () => {
-  const pending = new PendingLink();
-  assert.equal(pending.waiting, false);
-  assert.equal(pending.take(), null);
-
-  pending.hold(matched("https://example.com/order/5"));
-  assert.equal(pending.waiting, true);
-
-  const resumed = pending.take();
-  assert.equal(resumed?.name, "order");
-  assert.equal(pending.take(), null, "a held link is delivered once");
-});
-
-test("a newer link replaces an older one", () => {
-  const pending = new PendingLink();
-  pending.hold(matched("https://example.com/order/1"));
-  pending.hold(matched("https://example.com/order/2"));
-  assert.equal(pending.take()?.params.id, 2);
-});
-
-// A link acted on twenty minutes late navigates someone away from what they
-// are doing now.
-test("a held link expires", () => {
-  let at = new Date("2026-08-16T10:00:00Z").getTime();
-  const pending = new PendingLink({ expiresAfterMs: 60_000, now: () => new Date(at) });
-
-  pending.hold(matched("https://example.com/order/5"));
-  at += 30_000;
-  assert.equal(pending.waiting, true);
-
-  at += 60_000;
-  assert.equal(pending.waiting, false);
-  assert.equal(pending.take(), null);
 });

@@ -17,4 +17,4 @@ export {
   type RouterOptions,
 } from "./routes.ts";
 
-export { PendingLink, type PendingOptions } from "./pending.ts";
+export { InvalidHold, PendingLink, type PendingOptions } from "./pending.ts";

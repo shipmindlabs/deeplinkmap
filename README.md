@@ -118,6 +118,10 @@ Linking.addEventListener("url", ({ url }) => {
   }
   navigate(resolution.match.name, resolution.match.params);
 });
+
+// after a successful sign-in
+const resumed = pending.take();
+if (resumed) navigate(resumed.name, resumed.params);
 ```
 
 ## The link that arrives too early
@@ -126,9 +130,24 @@ Two moments break naive deep linking, and they are the same shape. A cold start
 opens the app *and* delivers a link, so it resolves before the navigator exists.
 A link to a screen behind a login arrives before there is a session.
 
-`PendingLink` holds the destination and replays it once, when the app can
-actually go there. Held links expire — a link acted on twenty minutes late
-navigates someone away from whatever they started doing instead.
+`PendingLink` parks the destination and replays it once. `take()` releases the
+hold before it hands the destination back, so the link is applied a single time:
+a login that fires twice, a remounted screen or a stray second call gets
+`null` rather than the screen again. `clear()` drops a hold on signing out, and a
+newer link replaces an older one.
+
+| | |
+|---|---|
+| `hold(match)` | park a destination, replacing whatever was parked |
+| `take()` | the destination once, or `null` — never the same one twice |
+| `waiting` | whether a fresh destination is still parked |
+| `clear()` | drop it |
+| `expiresAfterMs` | how long a hold lasts, ten minutes by default |
+
+Held links expire, because a link acted on twenty minutes late navigates someone
+away from whatever they started doing instead — and an expired hold is dropped
+rather than kept out of sight. A lifetime that could never do that, zero or
+endless, throws `InvalidHold`.
 
 ## No React Native import
 
@@ -149,11 +168,14 @@ given universal link at all is decided by `apple-app-site-association` and
 `assetlinks.json`, on your server. This validates what does arrive, and lets a
 route say it wants only what came through that verified door.
 
+**Not storage.** A hold lives in memory: a link parked before a login is gone if
+the app is killed before signing in.
+
 ## Status
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, pending links with expiry |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development
