@@ -108,21 +108,58 @@ const router = new Router(
   { schemes: ["myapp"], hosts: ["example.com", "*.example.com"] },
 );
 
-Linking.addEventListener("url", ({ url }) => {
-  const resolution = router.resolve(url);
-  if (!resolution.ok) return report(resolution.refusal);
+const intake = new LinkIntake(router);
+const pending = new PendingLink();
 
-  if (resolution.match.requiresAuth && !session) {
-    pending.hold(resolution.match);   // resume after signing in
+function handle(delivery: Delivery | null) {
+  if (delivery === null || delivery.status === "duplicate") return;
+  if (delivery.status === "refused") return report(delivery.refusal);
+
+  const { match } = delivery;
+  if (match.requiresAuth && !session) {
+    pending.hold(match);              // resume after signing in
     return navigate("SignIn");
   }
-  navigate(resolution.match.name, resolution.match.params);
-});
+  navigate(match.name, match.params);
+}
+
+Linking.getInitialURL().then((url) => handle(intake.start(url)));
+Linking.addEventListener("url", ({ url }) => handle(intake.deliver(url)));
 
 // after a successful sign-in
 const resumed = pending.take();
 if (resumed) navigate(resumed.name, resumed.params);
 ```
+
+## One door, cold or warm
+
+A running app is handed links by an event; a starting app has to ask for the one
+that opened it. Two delivery paths usually become two handlers, and two handlers
+drift: one of them ends up missing a check the other has.
+
+They also overlap. A cold start can deliver the same link through both paths, an
+event can fire twice for a single tap, a notification reopened from the tray
+repeats the URL it carried. Applied twice, that link pushes the same screen
+twice — or replays whatever the screen does on arrival, which for a one-time
+code or an order is not a cosmetic problem.
+
+`LinkIntake` is the single door. Both paths call it, and a link already seen
+within a short window comes back as a duplicate instead of being applied again.
+
+| | |
+|---|---|
+| `start(url)` | the cold-start link, as `getInitialURL()` resolved it; `null` when there was none |
+| `deliver(url)` | a link that arrived while the app was running |
+| `clear()` | forget every link seen so far |
+| `dedupeWithinMs` | how long a link is remembered, three seconds by default |
+
+A delivery is `matched`, `refused` or `duplicate`, and each carries `source` —
+`"cold"` or `"warm"` — so a log says which door a link came through.
+
+The window is anchored to when a link was first seen, so a link repeating in a
+loop cannot keep pushing its own window out and disappear for good. Links are
+compared as received: two different URLs are two links, even when they end up on
+the same screen.
 
 ## The link that arrives too early
 
@@ -169,13 +206,14 @@ given universal link at all is decided by `apple-app-site-association` and
 route say it wants only what came through that verified door.
 
 **Not storage.** A hold lives in memory: a link parked before a login is gone if
-the app is killed before signing in.
+the app is killed before signing in. What the intake remembers lives there too,
+which is all a repeat-within-seconds window needs.
 
 ## Status
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development

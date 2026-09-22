@@ -4,7 +4,7 @@
  *   npm run demo
  */
 
-import { PendingLink, Router, type Route } from "../src/index.ts";
+import { LinkIntake, PendingLink, Router, type Delivery, type Route } from "../src/index.ts";
 
 const routes: Route[] = [
   { name: "home", pattern: "/", accepts: ["universal", "scheme"] },
@@ -75,3 +75,18 @@ if (cold.ok) {
   console.log(`  resumed after login   : ${pending.take()?.name}`);
   console.log(`  delivered again       : ${pending.take() === null ? "no" : "yes"}`);
 }
+
+function show(delivery: Delivery | null): string {
+  if (delivery === null) return "nothing to apply";
+  if (delivery.status === "matched") return `-> ${delivery.match.name} (${delivery.source})`;
+  if (delivery.status === "refused") return `refused: ${delivery.refusal.reason}`;
+  return "duplicate, not applied again";
+}
+
+console.log("\none door, cold start and url event alike");
+const intake = new LinkIntake(router);
+const opened = "https://example.com/article/hello-world";
+console.log(`  cold start            : ${show(intake.start(opened))}`);
+console.log(`  url event, same link  : ${show(intake.deliver(opened))}`);
+console.log(`  url event, other link : ${show(intake.deliver("https://example.com/"))}`);
+console.log(`  opened with no link   : ${show(intake.start(null))}`);

@@ -18,3 +18,11 @@ export {
 } from "./routes.ts";
 
 export { InvalidHold, PendingLink, type PendingOptions } from "./pending.ts";
+
+export {
+  InvalidIntake,
+  LinkIntake,
+  type Delivery,
+  type IntakeOptions,
+  type LinkSource,
+} from "./intake.ts";
