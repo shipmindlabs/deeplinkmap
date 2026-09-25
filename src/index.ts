@@ -19,10 +19,6 @@ export {
 
 export { InvalidHold, PendingLink, type PendingOptions } from "./pending.ts";
 
-export {
-  InvalidIntake,
-  LinkIntake,
-  type Delivery,
-  type IntakeOptions,
-  type LinkSource,
-} from "./intake.ts";
+export { InvalidIntake, LinkIntake, type Delivery, type IntakeOptions } from "./intake.ts";
+
+export { type Audit, type AuditEvent, type LinkSource } from "./audit.ts";

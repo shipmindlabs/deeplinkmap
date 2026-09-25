@@ -12,13 +12,12 @@
  * one-time code or an order is not a cosmetic problem.
  *
  * So both paths meet in `deliver()`, and a link already seen within a short
- * window comes back as a duplicate instead of being applied again.
+ * window comes back as a duplicate instead of being applied again. A dropped
+ * repeat is a decision like any other, and goes to the router's audit hook.
  */
 
+import { report, type Audit, type LinkSource } from "./audit.ts";
 import type { Match, Refusal, Router } from "./routes.ts";
-
-/** The door a link came through: the cold start, or a running app. */
-export type LinkSource = "cold" | "warm";
 
 export type Delivery<Name extends string = string> =
   | { readonly status: "matched"; readonly source: LinkSource; readonly match: Match<Name> }
@@ -41,6 +40,7 @@ export class LinkIntake<Name extends string = string> {
   #seen = new Map<string, number>();
   #dedupeWithinMs: number;
   #now: () => Date;
+  #audit: Audit<Name> | null;
 
   constructor(router: Router<Name>, options: IntakeOptions = {}) {
     const dedupeWithinMs = options.dedupeWithinMs ?? DEFAULT_DEDUPE_WITHIN_MS;
@@ -55,6 +55,9 @@ export class LinkIntake<Name extends string = string> {
     this.#router = router;
     this.#dedupeWithinMs = dedupeWithinMs;
     this.#now = options.now ?? (() => new Date());
+    // The hook is configured once, on the table that accepts and refuses. What
+    // is dropped here goes to the same one, so one log holds every decision.
+    this.#audit = router.audit;
   }
 
   /**
@@ -74,12 +77,17 @@ export class LinkIntake<Name extends string = string> {
     // Links are compared as received: two different URLs are two links, even
     // when they end up on the same screen. Folding them together would suppress
     // a link somebody meant to send.
-    if (this.#seen.has(url)) return { status: "duplicate", source, url };
+    if (this.#seen.has(url)) {
+      if (this.#audit) {
+        report(this.#audit, { decision: "duplicate", at: new Date(at), url, source });
+      }
+      return { status: "duplicate", source, url };
+    }
     // The window is anchored to the first sighting, so a burst of repeats
     // cannot keep pushing it out and hide the link indefinitely.
     this.#seen.set(url, at);
 
-    const resolution = this.#router.resolve(url);
+    const resolution = this.#router.resolve(url, source);
     return resolution.ok
       ? { status: "matched", source, match: resolution.match }
       : { status: "refused", source, refusal: resolution.refusal };

@@ -5,7 +5,7 @@
  * A deep link is a URL anyone can send. It comes from an email, a text message,
  * another app, a QR code on a poster. The routing table is therefore an
  * authorisation boundary, and the usual implementation — a chain of
- * `startsWith` checks and a `params` object of whatever came after — has four
+ * `startsWith` checks and a `params` object of whatever came after — has five
  * problems:
  *
  *   1. Parameters are strings from a stranger, passed straight into a screen
@@ -18,10 +18,15 @@
  *   4. Every link counts as equally trustworthy, although a universal link is
  *      one the operating system checked against a host this app owns, while a
  *      custom scheme is a namespace any installed app can also register.
+ *   5. Nothing is written down. A refused link leaves no trace, so an app being
+ *      probed with links to hosts it does not own looks exactly like one that
+ *      nobody is sending anything to.
  *
- * This module is a table with types and refusals. It imports nothing from React
- * Native: `Linking` hands it a string.
+ * This module is a table with types, refusals and a record of both. It imports
+ * nothing from React Native: `Linking` hands it a string.
  */
+
+import { report, type Audit, type LinkSource } from "./audit.ts";
 
 /** What a parameter is allowed to be. Anything else is refused. */
 export type ParamKind = "string" | "number" | "uuid" | "slug";
@@ -87,7 +92,7 @@ export type Resolution<Name extends string = string> =
   | { readonly ok: true; readonly match: Match<Name> }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type RouterOptions = {
+export type RouterOptions<Name extends string = string> = {
   /** Custom schemes this app answers to, e.g. ["myapp"]. */
   readonly schemes?: readonly string[];
   /**
@@ -99,6 +104,9 @@ export type RouterOptions = {
   readonly accepts?: readonly LinkForm[];
   /** Accept http as well as https. Off by default; for local development. */
   readonly allowInsecure?: boolean;
+  /** Called with every decision this table makes, accepted or refused. */
+  readonly audit?: Audit<Name>;
+  readonly now?: () => Date;
 };
 
 /** The table describes routes that cannot be read, or that can never open. */
@@ -137,11 +145,15 @@ export class Router<Name extends string = string> {
   #hosts: HostPattern[];
   #schemes: string[];
   #allowInsecure: boolean;
+  #audit: Audit<Name> | null;
+  #now: () => Date;
 
-  constructor(routes: readonly Route<Name>[], options: RouterOptions = {}) {
+  constructor(routes: readonly Route<Name>[], options: RouterOptions<Name> = {}) {
     this.#hosts = (options.hosts ?? []).map(compileHost);
     this.#schemes = (options.schemes ?? []).map(compileScheme);
     this.#allowInsecure = options.allowInsecure ?? false;
+    this.#audit = options.audit ?? null;
+    this.#now = options.now ?? (() => new Date());
     const fallback = accepted(options.accepts ?? ["universal"], "the router");
 
     const names = new Set<string>();
@@ -189,8 +201,36 @@ export class Router<Name extends string = string> {
     this.#entries = entries;
   }
 
-  /** Resolve a link to a screen, or say why not. */
-  resolve(url: string): Resolution<Name> {
+  /**
+   * The hook every decision is reported to, so an intake in front of this
+   * table can report the links it drops to the same one.
+   */
+  get audit(): Audit<Name> | null {
+    return this.#audit;
+  }
+
+  /**
+   * Resolve a link to a screen, or say why not. Either way the decision is
+   * reported to the audit hook before it is handed back.
+   *
+   * `source` is the delivery path a link came through, which `LinkIntake`
+   * passes on. It is recorded and never routed on.
+   */
+  resolve(url: string, source: LinkSource | null = null): Resolution<Name> {
+    const resolution = this.#decide(url);
+    if (this.#audit) {
+      const at = this.#now();
+      report(
+        this.#audit,
+        resolution.ok
+          ? { decision: "accepted", at, url, source, match: resolution.match }
+          : { decision: "refused", at, url, source, refusal: resolution.refusal },
+      );
+    }
+    return resolution;
+  }
+
+  #decide(url: string): Resolution<Name> {
     let parsed: URL;
     try {
       parsed = new URL(url);
