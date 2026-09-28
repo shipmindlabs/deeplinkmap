@@ -90,3 +90,28 @@ console.log(`  cold start            : ${show(intake.start(opened))}`);
 console.log(`  url event, same link  : ${show(intake.deliver(opened))}`);
 console.log(`  url event, other link : ${show(intake.deliver("https://example.com/"))}`);
 console.log(`  opened with no link   : ${show(intake.start(null))}`);
+
+console.log("\nevery decision, written down");
+const journal: string[] = [];
+const audited = new Router(routes, {
+  schemes: ["myapp"],
+  hosts: ["example.com", "*.example.com"],
+  audit: (event) => {
+    const outcome =
+      event.decision === "accepted"
+        ? `-> ${event.match.name} (${event.match.form})`
+        : event.decision === "refused"
+          ? `refused: ${event.refusal.reason}`
+          : "duplicate, not applied again";
+    journal.push(`  ${(event.source ?? "direct").padEnd(6)} ${outcome.padEnd(30)} ${event.url}`);
+  },
+});
+
+const reviewed = new LinkIntake(audited);
+reviewed.start("https://example.com/order/4711");
+reviewed.deliver("https://example.com/order/4711");
+reviewed.deliver(`myapp://receipt/${receipt}/pdf`);
+reviewed.deliver("https://evil.example.net/order/1");
+audited.resolve("https://example.com/admin/danger");
+
+for (const line of journal) console.log(line);

@@ -113,7 +113,7 @@ const pending = new PendingLink();
 
 function handle(delivery: Delivery | null) {
   if (delivery === null || delivery.status === "duplicate") return;
-  if (delivery.status === "refused") return report(delivery.refusal);
+  if (delivery.status === "refused") return;   // the audit hook has it
 
   const { match } = delivery;
   if (match.requiresAuth && !session) {
@@ -161,6 +161,43 @@ loop cannot keep pushing its own window out and disappear for good. Links are
 compared as received: two different URLs are two links, even when they end up on
 the same screen.
 
+## Every decision, written down
+
+Usually a refused link leaves no trace, so an app being probed with links to
+hosts it does not own looks exactly like one nobody is sending anything to. The
+`audit` hook on the router is called with every decision the table makes, and
+`LinkIntake` reports the repeats it drops to that same hook, so one log holds
+every decision rather than only the ones that happened to go one way.
+
+```ts
+const router = new Router(routes, {
+  hosts: ["example.com"],
+  audit: (event) => {
+    if (event.decision === "refused") {
+      log.warn("deep link refused", { reason: event.refusal.reason, url: event.url });
+    }
+  },
+});
+```
+
+| | |
+|---|---|
+| `decision` | `accepted`, `refused` or `duplicate` |
+| `url` | the link as received |
+| `source` | `cold`, `warm`, or `null` when the router was asked directly |
+| `match` | on `accepted`: the route, its validated parameters and the door |
+| `refusal` | on `refused`: the reason and its detail |
+| `at` | when the decision was made |
+
+The refusals are the interesting half. A run of `foreign-host` is somebody
+probing the app with links it does not own; a `bad-parameter` on a route that
+worked last week is a link generator that drifted; `form-not-accepted` on a
+reset route is a token arriving through a door any installed app can register.
+
+A hook that throws loses its event and nothing else. The decision is already
+made by then, and a logger that fails must not turn a link anyone can send into
+a crash inside a `Linking` handler.
+
 ## The link that arrives too early
 
 Two moments break naive deep linking, and they are the same shape. A cold start
@@ -205,6 +242,9 @@ given universal link at all is decided by `apple-app-site-association` and
 `assetlinks.json`, on your server. This validates what does arrive, and lets a
 route say it wants only what came through that verified door.
 
+**Not a log.** The audit hook hands events to whatever you already log with; it
+keeps nothing, batches nothing and writes nowhere.
+
 **Not storage.** A hold lives in memory: a link parked before a login is gone if
 the app is killed before signing in. What the intake remembers lives there too,
 which is all a repeat-within-seconds window needs.
@@ -213,7 +253,7 @@ which is all a repeat-within-seconds window needs.
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development
