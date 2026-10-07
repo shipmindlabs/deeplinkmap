@@ -21,6 +21,33 @@ $ npm run demo
   https://example.com/admin/danger      refused: no-route
 ```
 
+## Why the table is the boundary
+
+Every other check an app makes about what somebody may see runs after a screen
+has been chosen. A deep link chooses the screen. By the time a component asks
+whether there is a session, the navigator has pushed it, its effects have fired,
+and the parameters it was handed came from whoever sent the URL — which, for a
+link in an email or behind a QR code on a poster, is anybody.
+
+That decision gets made whether or not anything is written to make it. In a
+chain of `startsWith` checks it is made by a prefix and a `params` object of
+strings, spread across the branches of one function, and the four things a
+boundary has to be able to say cannot be said there: what exists, who may reach
+it, what happens when nothing fits, and what was decided.
+
+A table can say all four. A route exists or it does not. It declares the kind of
+every parameter, so a screen expecting an id is never handed `1 OR 1=1`, and the
+doors it opens to, so a reset token does not arrive through a scheme any
+installed app can register. A link matching nothing earns a refusal — a value,
+returned whole — rather than the last screen that nearly fit. And every
+decision, accepted or refused, goes to one hook.
+
+The table itself is checked before a link ever reaches it. A placeholder nobody
+declared, a constraint that refuses every value, a route open to a door the app
+does not have: each throws when the router is built. A boundary nobody can read
+is one nobody can review, and a gap in it is a gap in the only place links are
+decided.
+
 ## What gets refused
 
 **Parameters are validated before a screen sees them.** `:id` declared as
@@ -223,11 +250,73 @@ away from whatever they started doing instead — and an expired hold is dropped
 rather than kept out of sight. A lifetime that could never do that, zero or
 endless, throws `InvalidHold`.
 
+## Wiring it to React Navigation
+
+The table decides; a navigator obeys. Keeping that one-way, with React
+Navigation, takes a navigation ref and two functions.
+
+```ts
+// navigation.ts — the one file that knows a navigator exists
+import { createNavigationContainerRef } from "@react-navigation/native";
+
+export const nav = createNavigationContainerRef();
+```
+
+```ts
+// links.ts
+import { LinkIntake, PendingLink, type Delivery, type Match } from "deeplinkmap";
+import { nav } from "./navigation.ts";
+import { router } from "./routes.ts";
+
+const intake = new LinkIntake(router);
+const pending = new PendingLink();
+
+function go(match: Match) {
+  // A cold-start link resolves before the navigator mounts; a link behind a
+  // login arrives before there is a session. Both park.
+  if (!nav.isReady() || (match.requiresAuth && !session)) {
+    pending.hold(match);
+    if (nav.isReady()) nav.navigate("SignIn" as never);
+    return;
+  }
+  // Where a name from the table meets a typed navigator: one file, two casts.
+  nav.navigate(match.name as never, match.params as never);
+}
+
+/** Both of Linking's paths end up here. */
+export function handle(delivery: Delivery | null) {
+  // A refusal and a repeat are decisions too; the audit hook already has them.
+  if (delivery?.status !== "matched") return;
+  go(delivery.match);
+}
+
+/** The navigator became ready, or somebody signed in. */
+export function resume() {
+  const match = pending.take();
+  if (match) go(match);
+}
+```
+
+```tsx
+<NavigationContainer ref={nav} onReady={resume}>
+```
+
+The `linking` prop stays off. React Navigation's own `linking` config is a
+second table turning URLs into screens: it maps a path to a screen, hands the
+segments on as strings, has no notion of a host this app does not own, and its
+answer to an unmatched link is still a screen. Two tables deciding the same
+links means the unchecked one answers some of them.
+
+Route names are screen names here, which leaves no mapping to keep correct.
+Where they have to differ, one record in this file is the whole translation.
+
 ## No React Native import
 
-`Linking` hands this a string; that is the whole integration. So every case
-above is tested in a plain runner without a device, and the same table works for
-web URLs.
+This imports nothing — not `Linking`, not React Navigation. `Linking` hands it a
+string and `navigate` takes a name and an object, so the integration above is
+ordinary values on both sides. That is why every case here is tested in a plain
+runner, without a device or a navigator, and why the same table works for web
+URLs.
 
 ## What it is not
 
