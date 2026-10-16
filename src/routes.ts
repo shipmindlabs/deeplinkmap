@@ -17,7 +17,8 @@
  *      screen fails oddly rather than the app asking for a login first.
  *   4. Every link counts as equally trustworthy, although a universal link is
  *      one the operating system checked against a host this app owns, while a
- *      custom scheme is a namespace any installed app can also register.
+ *      custom scheme is a namespace any installed app can also register and an
+ *      http link was checked by nobody at all.
  *   5. Nothing is written down. A refused link leaves no trace, so an app being
  *      probed with links to hosts it does not own looks exactly like one that
  *      nobody is sending anything to.
@@ -31,8 +32,12 @@ import { report, type Audit, type LinkSource } from "./audit.ts";
 /** What a parameter is allowed to be. Anything else is refused. */
 export type ParamKind = "string" | "number" | "uuid" | "slug";
 
-/** The door a link arrived through: a verified https link, or a custom scheme. */
-export type LinkForm = "universal" | "scheme";
+/**
+ * The door a link arrived through: a universal link the operating system
+ * checked against a host this app owns, a custom scheme any installed app can
+ * register, or a plain http link nothing verified at all.
+ */
+export type LinkForm = "universal" | "scheme" | "insecure";
 
 export type ParamSpec = {
   readonly kind: ParamKind;
@@ -102,7 +107,11 @@ export type RouterOptions<Name extends string = string> = {
   readonly hosts?: readonly string[];
   /** The doors routes open to when they do not say. Defaults to ["universal"]. */
   readonly accepts?: readonly LinkForm[];
-  /** Accept http as well as https. Off by default; for local development. */
+  /**
+   * Let an http link be read at all. Off by default; for local development.
+   * The flag is not a door: an http link arrives as the "insecure" form, so a
+   * route only opens to one by saying `accepts: ["insecure"]`.
+   */
   readonly allowInsecure?: boolean;
   /** Called with every decision this table makes, accepted or refused. */
   readonly audit?: Audit<Name>;
@@ -128,7 +137,13 @@ const DEFAULT_MAX_LENGTH = 128;
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const SCHEME = /^[a-z][a-z0-9+.-]*$/;
 
-const FORM_NAMES: Record<LinkForm, string> = { universal: "universal", scheme: "custom-scheme" };
+const FORMS: readonly LinkForm[] = ["universal", "scheme", "insecure"];
+
+const FORM_NAMES: Record<LinkForm, string> = {
+  universal: "universal",
+  scheme: "custom-scheme",
+  insecure: "insecure http",
+};
 
 type HostPattern = { readonly host: string; readonly wildcard: boolean };
 type Entry<Name extends string> = {
@@ -193,7 +208,7 @@ export class Router<Name extends string = string> {
       }
 
       const accepts = route.accepts ? accepted(route.accepts, `route "${route.name}"`) : fallback;
-      const shut = unreachable(accepts, this.#hosts, this.#schemes);
+      const shut = unreachable(accepts, this.#hosts, this.#schemes, this.#allowInsecure);
       if (shut) throw new InvalidRoute(`route "${route.name}" can never open: ${shut}`);
 
       entries.push({ route, accepts });
@@ -241,11 +256,17 @@ export class Router<Name extends string = string> {
     const scheme = parsed.protocol.replace(":", "").toLowerCase();
     let form: LinkForm;
     if (scheme === "https" || scheme === "http") {
-      form = "universal";
       // An http link is not a universal link: nothing verified it, and anyone
-      // between the tap and the app can rewrite where it points.
-      if (scheme === "http" && !this.#allowInsecure) {
-        return refuse("insecure-scheme", "http links are not accepted, only https", url);
+      // between the tap and the app can rewrite where it points. The flag only
+      // lets it be read; it arrives as its own form, so turning the flag on for
+      // local development cannot widen a route written for verified links.
+      if (scheme === "http") {
+        if (!this.#allowInsecure) {
+          return refuse("insecure-scheme", "http links are not accepted, only https", url);
+        }
+        form = "insecure";
+      } else {
+        form = "universal";
       }
       // An https link to a host this app does not own is somebody else's link.
       // Following it is how an app becomes an open redirect with a native UI.
@@ -261,9 +282,9 @@ export class Router<Name extends string = string> {
 
     // For a custom scheme, "myapp://order/7" puts "order" in the host.
     const path =
-      form === "universal"
-        ? parsed.pathname
-        : "/" + [parsed.hostname, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/");
+      form === "scheme"
+        ? "/" + [parsed.hostname, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/")
+        : parsed.pathname;
 
     for (const { route, accepts } of this.#entries) {
       const captured = capture(route.pattern, path);
@@ -271,7 +292,8 @@ export class Router<Name extends string = string> {
 
       // The door is part of the decision. A universal link was checked against
       // a host this app owns; a custom scheme is a namespace any installed app
-      // can register, so a route holding a token or a session says so.
+      // can register, and an http link was checked by nobody, so a route
+      // holding a token or a session says which doors it opens to.
       if (!accepts.has(form)) {
         return refuse(
           "form-not-accepted",
@@ -338,7 +360,7 @@ function accepted(forms: readonly LinkForm[], where: string): ReadonlySet<LinkFo
     throw new InvalidPolicy(`${where} accepts no link form, so no link can open`);
   }
   for (const form of forms) {
-    if (form !== "universal" && form !== "scheme") {
+    if (!FORMS.includes(form)) {
       throw new InvalidPolicy(`${where} accepts unknown link form ${JSON.stringify(form)}`);
     }
   }
@@ -347,24 +369,30 @@ function accepted(forms: readonly LinkForm[], where: string): ReadonlySet<LinkFo
 
 /**
  * A route open only to doors the app does not have — universal links with no
- * declared host, custom-scheme links with no declared scheme — is a route no
- * link can reach. Saying so here beats a link quietly going nowhere later.
+ * declared host, custom-scheme links with no declared scheme, http links the
+ * router never allowed — is a route no link can reach. Saying so here beats a
+ * link quietly going nowhere later.
  */
 function unreachable(
   accepts: ReadonlySet<LinkForm>,
   hosts: readonly HostPattern[],
   schemes: readonly string[],
+  allowInsecure: boolean,
 ): string | null {
   const missing: string[] = [];
   if (accepts.has("universal")) {
     if (hosts.length > 0) return null;
-    missing.push("hosts");
+    missing.push("declares no hosts");
   }
   if (accepts.has("scheme")) {
     if (schemes.length > 0) return null;
-    missing.push("schemes");
+    missing.push("declares no schemes");
   }
-  return `the router declares no ${missing.join(" or ")}`;
+  if (accepts.has("insecure")) {
+    if (allowInsecure && hosts.length > 0) return null;
+    missing.push(allowInsecure ? "declares no hosts" : "does not allow insecure links");
+  }
+  return `the router ${[...new Set(missing)].join(" and ")}`;
 }
 
 function compileHost(raw: string): HostPattern {

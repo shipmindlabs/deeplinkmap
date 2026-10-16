@@ -70,20 +70,26 @@ else is dropped rather than passed on.
 
 ## Hosts and schemes
 
-The two doors are not equally trustworthy. A universal link is one the operating
+The doors are not equally trustworthy. A universal link is one the operating
 system checked against a host that serves `apple-app-site-association` or
 `assetlinks.json` naming this app. A custom scheme is checked by nobody: any
-installed app can also register `myapp://`, and any web page can link to it. So
-the door a link came through is part of what it is allowed to do, and a route
-carrying a reset token or reaching a signed-in screen can decline the unverified
-one.
+installed app can also register `myapp://`, and any web page can link to it. An
+http link is checked by nobody either, and anyone between the tap and the app
+can rewrite where it points. So the door a link came through is part of what it
+is allowed to do, and a route carrying a reset token or reaching a signed-in
+screen can decline the unverified ones.
+
+`allowInsecure` is therefore not a door. It lets an http link be read at all,
+during local development, and that link arrives as its own form — `insecure` —
+so a route opens to it only by saying so. A route open to `insecure` alone
+without the flag can never be reached, and throws when the router is built.
 
 | | |
 |---|---|
 | `hosts` | `example.com`, or `*.example.com` for exactly one label below it |
 | `schemes` | custom schemes, e.g. `myapp`; `http`/`https` belong in `hosts` |
-| `accepts` | `universal`, `scheme` or both — per route, defaulting to `universal` |
-| `allowInsecure` | accept `http` as well as `https`; off by default |
+| `accepts` | `universal`, `scheme`, `insecure`, or several — per route, defaulting to `universal` |
+| `allowInsecure` | let `http` links be read at all; off by default, and a route still has to accept `insecure` |
 
 A host is compared whole: `example.com.evil.net` ends with the declared host and
 is somebody else's site, which is exactly what a `startsWith`/`endsWith` check
@@ -342,7 +348,7 @@ which is all a repeat-within-seconds window needs.
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default with http as its own opt-in link form, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development

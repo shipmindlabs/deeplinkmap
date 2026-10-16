@@ -165,12 +165,46 @@ test("the same host written differently is still ours", () => {
 test("an http link is refused unless the app opts in", () => {
   assert.equal(refused("http://example.com/order/1").reason, "insecure-scheme");
 
-  const local = new Router([{ name: "order", pattern: "/order/:id", params: { id: "number" } }], {
-    hosts: ["localhost"],
+  const local = new Router(
+    [
+      {
+        name: "order",
+        pattern: "/order/:id",
+        params: { id: "number" },
+        accepts: ["universal", "insecure"],
+      },
+    ],
+    { hosts: ["localhost"], allowInsecure: true },
+  );
+  assert.equal(matched("http://localhost/order/1", local).name, "order");
+  assert.equal(matched("http://localhost/order/1", local).form, "insecure");
+  assert.equal(matched("https://localhost/order/1", local).form, "universal");
+  assert.equal(refused("http://example.com/order/1", local).reason, "foreign-host");
+});
+
+// The flag lets an http link be read at all; it is not a door into the routes
+// written for links the operating system checked.
+test("the flag alone does not open a universal-only route to http", () => {
+  const local = new Router(routes, {
+    schemes: ["myapp"],
+    hosts: ["example.com"],
     allowInsecure: true,
   });
-  assert.equal(matched("http://localhost/order/1", local).name, "order");
-  assert.equal(refused("http://example.com/order/1", local).reason, "foreign-host");
+
+  assert.equal(matched(`https://example.com/reset/${token}`, local).name, "reset");
+  const refusal = refused(`http://example.com/reset/${token}`, local);
+  assert.equal(refusal.reason, "form-not-accepted");
+  assert.match(refusal.detail, /insecure/);
+});
+
+test("a route open to insecure links alone needs the flag to be built", () => {
+  const route: Route = { name: "dev", pattern: "/dev", accepts: ["insecure"] };
+  assert.throws(() => new Router([route], { hosts: ["localhost"] }), InvalidRoute);
+  assert.throws(() => new Router([route], { allowInsecure: true }), InvalidRoute);
+
+  const local = new Router([route], { hosts: ["localhost"], allowInsecure: true });
+  assert.equal(matched("http://localhost/dev", local).name, "dev");
+  assert.equal(refused("https://localhost/dev", local).reason, "form-not-accepted");
 });
 
 test("a scheme this app does not answer to is refused", () => {
