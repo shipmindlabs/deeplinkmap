@@ -10,6 +10,10 @@
  * The hook is set on the `Router`, where a link is accepted or refused, and
  * `LinkIntake` reports the deliveries it drops to that same hook, so one log
  * holds every decision rather than the ones that happened to go one way.
+ *
+ * What a route declared `secret` never reaches an event: the link is reported
+ * with that segment masked, because a log of every decision must not become a
+ * second copy of every reset token.
  */
 
 import type { Match, Refusal } from "./routes.ts";
@@ -21,10 +25,11 @@ export type AuditEvent<Name extends string = string> =
   | {
       readonly decision: "accepted";
       readonly at: Date;
-      /** The link as received. */
+      /** The link, with every secret value masked. */
       readonly url: string;
       /** The delivery path, or null when the router was asked directly. */
       readonly source: LinkSource | null;
+      /** The route and its parameters, masked too. The caller's match is not. */
       readonly match: Match<Name>;
     }
   | {

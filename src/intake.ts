@@ -22,7 +22,12 @@ import type { Match, Refusal, Router } from "./routes.ts";
 export type Delivery<Name extends string = string> =
   | { readonly status: "matched"; readonly source: LinkSource; readonly match: Match<Name> }
   | { readonly status: "refused"; readonly source: LinkSource; readonly refusal: Refusal }
-  | { readonly status: "duplicate"; readonly source: LinkSource; readonly url: string };
+  | {
+      readonly status: "duplicate";
+      readonly source: LinkSource;
+      /** The link, with every secret value masked. */
+      readonly url: string;
+    };
 
 export type IntakeOptions = {
   /** How long a link is remembered as already seen. Defaults to three seconds. */
@@ -76,12 +81,14 @@ export class LinkIntake<Name extends string = string> {
 
     // Links are compared as received: two different URLs are two links, even
     // when they end up on the same screen. Folding them together would suppress
-    // a link somebody meant to send.
+    // a link somebody meant to send — two different tokens included, which is
+    // why what is remembered here is the link and what is reported is not.
     if (this.#seen.has(url)) {
+      const shown = this.#router.mask(url);
       if (this.#audit) {
-        report(this.#audit, { decision: "duplicate", at: new Date(at), url, source });
+        report(this.#audit, { decision: "duplicate", at: new Date(at), url: shown, source });
       }
-      return { status: "duplicate", source, url };
+      return { status: "duplicate", source, url: shown };
     }
     // The window is anchored to the first sighting, so a burst of repeats
     // cannot keep pushing it out and hide the link indefinitely.

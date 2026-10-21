@@ -50,6 +50,12 @@ export type ParamSpec = {
   readonly max?: number;
   /** The complete set of accepted values. Anything else is refused. */
   readonly oneOf?: readonly (string | number)[];
+  /**
+   * Keep the value out of every record of the decision: the link is reported
+   * with this segment masked, in a refusal detail and in an audit event alike.
+   * `match.params` still carries it, because the screen is what it was for.
+   */
+  readonly secret?: boolean;
 };
 
 export type Route<Name extends string = string> = {
@@ -76,7 +82,7 @@ export type Match<Name extends string = string> = {
   readonly requiresAuth: boolean;
   /** The door this link came through. */
   readonly form: LinkForm;
-  /** The link as received, for logging. Never for routing. */
+  /** The link for logging, every secret value masked. Never for routing. */
   readonly url: string;
 };
 
@@ -145,10 +151,18 @@ const FORM_NAMES: Record<LinkForm, string> = {
   insecure: "insecure http",
 };
 
+/** What a secret value is reported as: unchanged by a path or a query string. */
+const MASK = "***";
+
 type HostPattern = { readonly host: string; readonly wildcard: boolean };
 type Entry<Name extends string> = {
   readonly route: Route<Name>;
   readonly accepts: ReadonlySet<LinkForm>;
+  /** Placeholders whose value is masked wherever this link is reported. */
+  readonly secrets: ReadonlySet<string>;
+  /** Query parameters whose value is masked wherever this link is reported. */
+  readonly secretQuery: ReadonlySet<string>;
+  readonly hides: boolean;
 };
 
 function spec(value: ParamSpec | ParamKind): ParamSpec {
@@ -161,6 +175,7 @@ export class Router<Name extends string = string> {
   #schemes: string[];
   #allowInsecure: boolean;
   #audit: Audit<Name> | null;
+  #hides: boolean;
   #now: () => Date;
 
   constructor(routes: readonly Route<Name>[], options: RouterOptions<Name> = {}) {
@@ -195,25 +210,38 @@ export class Router<Name extends string = string> {
           );
         }
       }
+      const secrets = new Set<string>();
       for (const [key, declaration] of Object.entries(route.params ?? {})) {
         if (!declared.includes(key)) {
           throw new InvalidRoute(
             `route "${route.name}" declares "${key}" but its pattern has no :${key}`,
           );
         }
-        check(route.name, `:${key}`, spec(declaration));
+        const parameter = spec(declaration);
+        check(route.name, `:${key}`, parameter);
+        if (parameter.secret) secrets.add(key);
       }
+      const secretQuery = new Set<string>();
       for (const [key, declaration] of Object.entries(route.query ?? {})) {
-        check(route.name, `?${key}`, spec(declaration));
+        const parameter = spec(declaration);
+        check(route.name, `?${key}`, parameter);
+        if (parameter.secret) secretQuery.add(key);
       }
 
       const accepts = route.accepts ? accepted(route.accepts, `route "${route.name}"`) : fallback;
       const shut = unreachable(accepts, this.#hosts, this.#schemes, this.#allowInsecure);
       if (shut) throw new InvalidRoute(`route "${route.name}" can never open: ${shut}`);
 
-      entries.push({ route, accepts });
+      entries.push({
+        route,
+        accepts,
+        secrets,
+        secretQuery,
+        hides: secrets.size > 0 || secretQuery.size > 0,
+      });
     }
     this.#entries = entries;
+    this.#hides = entries.some((entry) => entry.hides);
   }
 
   /**
@@ -235,14 +263,73 @@ export class Router<Name extends string = string> {
     const resolution = this.#decide(url);
     if (this.#audit) {
       const at = this.#now();
+      // The event carries the link and the parameters as the record may hold
+      // them, which is masked wherever a route declared a value secret.
       report(
         this.#audit,
         resolution.ok
-          ? { decision: "accepted", at, url, source, match: resolution.match }
-          : { decision: "refused", at, url, source, refusal: resolution.refusal },
+          ? {
+              decision: "accepted",
+              at,
+              url: resolution.match.url,
+              source,
+              match: this.#loggable(resolution.match),
+            }
+          : {
+              decision: "refused",
+              at,
+              url: resolution.refusal.url,
+              source,
+              refusal: resolution.refusal,
+            },
       );
     }
     return resolution;
+  }
+
+  /**
+   * The link as it may be written down: every value a route declared `secret`
+   * replaced by a mask. `LinkIntake` uses this for the repeats it drops, which
+   * never reach the table at all.
+   *
+   * The shape of the link decides, not the reason it was refused: a token that
+   * came through a door its route does not open to, or addressed to a host
+   * this app does not own, is a token either way.
+   */
+  mask(url: string): string {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      // No route claims a segment of a link nothing could parse, and none
+      // matched it either.
+      return url;
+    }
+    return this.#mask(parsed, url);
+  }
+
+  #mask(parsed: URL, url: string): string {
+    if (!this.#hides) return url;
+    const path = pathOf(parsed);
+    for (const entry of this.#entries) {
+      // The first pattern a path fits is the one that would route it, so the
+      // masked link and the routed link never disagree about which segment is
+      // the secret one.
+      if (!capture(entry.route.pattern, path)) continue;
+      return entry.hides ? redact(parsed, entry) : url;
+    }
+    return url;
+  }
+
+  /** The match as a log may hold it, with every secret value masked. */
+  #loggable(match: Match<Name>): Match<Name> {
+    const entry = this.#entries.find((candidate) => candidate.route.name === match.name);
+    if (!entry?.hides) return match;
+    return {
+      ...match,
+      params: covered(match.params, entry.secrets),
+      query: covered(match.query, entry.secretQuery),
+    };
   }
 
   #decide(url: string): Resolution<Name> {
@@ -253,6 +340,11 @@ export class Router<Name extends string = string> {
       return refuse("unparseable", "not a URL", url);
     }
 
+    // Every decision below reports this link rather than the one that arrived.
+    // A reset token is a parameter like any other, and a log of every decision
+    // must not become a second copy of every token that was sent.
+    const shown = this.#mask(parsed, url);
+
     const scheme = parsed.protocol.replace(":", "").toLowerCase();
     let form: LinkForm;
     if (scheme === "https" || scheme === "http") {
@@ -262,7 +354,7 @@ export class Router<Name extends string = string> {
       // local development cannot widen a route written for verified links.
       if (scheme === "http") {
         if (!this.#allowInsecure) {
-          return refuse("insecure-scheme", "http links are not accepted, only https", url);
+          return refuse("insecure-scheme", "http links are not accepted, only https", shown);
         }
         form = "insecure";
       } else {
@@ -272,21 +364,17 @@ export class Router<Name extends string = string> {
       // Following it is how an app becomes an open redirect with a native UI.
       const hostname = bareHost(parsed.hostname);
       if (!this.#hosts.some((pattern) => hostAllows(pattern, hostname))) {
-        return refuse("foreign-host", `${parsed.hostname} is not one of this app's hosts`, url);
+        return refuse("foreign-host", `${parsed.hostname} is not one of this app's hosts`, shown);
       }
     } else if (this.#schemes.includes(scheme)) {
       form = "scheme";
     } else {
-      return refuse("unknown-scheme", `${scheme}: is not one of this app's schemes`, url);
+      return refuse("unknown-scheme", `${scheme}: is not one of this app's schemes`, shown);
     }
 
-    // For a custom scheme, "myapp://order/7" puts "order" in the host.
-    const path =
-      form === "scheme"
-        ? "/" + [parsed.hostname, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/")
-        : parsed.pathname;
+    const path = pathOf(parsed);
 
-    for (const { route, accepts } of this.#entries) {
+    for (const { route, accepts, secrets, secretQuery } of this.#entries) {
       const captured = capture(route.pattern, path);
       if (!captured) continue;
 
@@ -298,7 +386,7 @@ export class Router<Name extends string = string> {
         return refuse(
           "form-not-accepted",
           `route "${route.name}" does not accept ${FORM_NAMES[form]} links`,
-          url,
+          shown,
         );
       }
 
@@ -309,7 +397,10 @@ export class Router<Name extends string = string> {
         const declaration = spec(route.params![key]!);
         const checked = validate(raw, declaration);
         if (checked === null) {
-          return refuse("bad-parameter", `${key}="${raw}" is not ${describe(declaration)}`, url);
+          // A value refused is still the value that was sent, and a detail is
+          // written down like everything else here.
+          const got = secrets.has(key) ? MASK : `"${raw}"`;
+          return refuse("bad-parameter", `${key}=${got} is not ${describe(declaration)}`, shown);
         }
         params[key] = checked;
       }
@@ -319,15 +410,13 @@ export class Router<Name extends string = string> {
       // reading a stranger's input.
       const query: Record<string, string | number> = {};
       for (const [key, declaration] of Object.entries(route.query ?? {})) {
+        const declared = spec(declaration);
         const raw = parsed.searchParams.get(key);
         if (raw === null) continue;
-        const checked = validate(raw, spec(declaration));
+        const checked = validate(raw, declared);
         if (checked === null) {
-          return refuse(
-            "bad-parameter",
-            `?${key}="${raw}" is not ${describe(spec(declaration))}`,
-            url,
-          );
+          const got = secretQuery.has(key) ? MASK : `"${raw}"`;
+          return refuse("bad-parameter", `?${key}=${got} is not ${describe(declared)}`, shown);
         }
         query[key] = checked;
       }
@@ -340,19 +429,73 @@ export class Router<Name extends string = string> {
           query,
           requiresAuth: route.requiresAuth ?? false,
           form,
-          url,
+          url: shown,
         },
       };
     }
 
     // No route matched. Refusing is the point: opening "whatever matched last"
     // is how a stranger's link lands on a screen nobody meant to expose.
-    return refuse("no-route", `nothing matches ${path}`, url);
+    return refuse("no-route", `nothing matches ${path}`, shown);
   }
 }
 
 function refuse(reason: Refusal["reason"], detail: string, url: string): Resolution<never> {
   return { ok: false, refusal: { reason, detail, url } };
+}
+
+/** The same values, with the secret ones replaced. */
+function covered(
+  values: Readonly<Record<string, string | number>>,
+  secrets: ReadonlySet<string>,
+): Readonly<Record<string, string | number>> {
+  if (secrets.size === 0) return values;
+  const shown: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(values)) {
+    shown[key] = secrets.has(key) ? MASK : value;
+  }
+  return shown;
+}
+
+/**
+ * The link with every secret value masked. It is rebuilt from the parsed URL
+ * rather than edited as text, so a declared query parameter is masked however
+ * many times it appears and userinfo nobody routes on does not travel on.
+ */
+function redact<Name extends string>(parsed: URL, entry: Entry<Name>): string {
+  const wanted = entry.route.pattern.split("/").filter(Boolean);
+  const kept = pathOf(parsed)
+    .split("/")
+    .filter(Boolean)
+    .map((segment, index) => {
+      const declared = wanted[index] ?? "";
+      return declared.startsWith(":") && entry.secrets.has(declared.slice(1)) ? MASK : segment;
+    });
+
+  const query = new URLSearchParams();
+  for (const [key, value] of parsed.searchParams) {
+    query.append(key, entry.secretQuery.has(key) ? MASK : value);
+  }
+  const search = query.size > 0 ? `?${query}` : "";
+  const path = kept.join("/");
+
+  return overHttp(parsed)
+    ? `${parsed.protocol}//${parsed.host}/${path}${search}${parsed.hash}`
+    : `${parsed.protocol}//${path}${search}${parsed.hash}`;
+}
+
+function overHttp(parsed: URL): boolean {
+  const scheme = parsed.protocol.replace(":", "").toLowerCase();
+  return scheme === "https" || scheme === "http";
+}
+
+/**
+ * The path a pattern is matched against. For a custom scheme,
+ * "myapp://order/7" puts "order" in the host, so the host is a segment.
+ */
+function pathOf(parsed: URL): string {
+  if (overHttp(parsed)) return parsed.pathname;
+  return "/" + [parsed.hostname, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/");
 }
 
 function accepted(forms: readonly LinkForm[], where: string): ReadonlySet<LinkForm> {
@@ -475,6 +618,11 @@ function check(route: string, where: string, declaration: ParamSpec): void {
   }
 
   if (declaration.oneOf) {
+    // A refusal names the set it refused against, and a value drawn from a set
+    // written in the table is not a secret in the first place.
+    if (declaration.secret) {
+      fail("is secret and lists the complete set of values it is drawn from in oneOf");
+    }
     if (declaration.oneOf.length === 0) fail("has an empty oneOf, so nothing can match");
     for (const value of declaration.oneOf) {
       if (validate(String(value), { ...declaration, oneOf: undefined }) === null) {
