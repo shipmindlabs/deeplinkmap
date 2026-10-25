@@ -26,6 +26,9 @@ const routes: Route[] = [
     pattern: "/receipt/:id/:format",
     params: { id: "uuid", format: { kind: "string", oneOf: ["pdf", "html"] } },
   },
+  // A token in a URL reaches the screen, and no record of the decision keeps a
+  // copy of it.
+  { name: "reset", pattern: "/reset/:token", params: { token: { kind: "uuid", secret: true } } },
 ];
 
 const router = new Router(routes, {
@@ -34,6 +37,7 @@ const router = new Router(routes, {
 });
 
 const receipt = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+const reset = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 
 const arriving = [
   "https://example.com/order/4711",
@@ -115,3 +119,18 @@ reviewed.deliver("https://evil.example.net/order/1");
 audited.resolve("https://example.com/admin/danger");
 
 for (const line of journal) console.log(line);
+
+console.log("\nand not a second copy of every token");
+const holding: string[] = [];
+const held = new LinkIntake(audited);
+const arrived = held.deliver(`https://example.com/reset/${reset}`);
+if (arrived.status === "matched") {
+  holding.push(`  the screen gets  : ${arrived.match.params.token}`);
+  holding.push(`  the log gets     : ${arrived.match.url}`);
+}
+held.deliver(`https://example.com/reset/${reset}`);
+audited.resolve(`myapp://reset/${reset}`);
+audited.resolve("https://example.com/reset/not-a-uuid-at-all");
+
+for (const line of holding) console.log(line);
+for (const line of journal.slice(5)) console.log(line);

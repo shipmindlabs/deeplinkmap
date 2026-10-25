@@ -111,6 +111,7 @@ screen actually has.
 | `minLength` / `maxLength` | length bounds, `1` and `128` by default |
 | `min` / `max` | closed range, `number` only |
 | `oneOf` | the complete set of accepted values |
+| `secret` | the value reaches the screen and no record of the decision |
 
 A constraint that refuses everything — `min` above `max`, a `oneOf` value its
 own kind rejects, `min` on a slug, a repeated or duplicated route — throws
@@ -135,8 +136,9 @@ const router = new Router(
       query: { ref: "slug" },
       accepts: ["universal", "scheme"],
     },
-    // No accepts: a reset token only arrives through a verified link.
-    { name: "reset", pattern: "/reset/:token", params: { token: "uuid" } },
+    // No accepts: a reset token only arrives through a verified link, and
+    // secret keeps it out of every record of the decision.
+    { name: "reset", pattern: "/reset/:token", params: { token: { kind: "uuid", secret: true } } },
   ],
   { schemes: ["myapp"], hosts: ["example.com", "*.example.com"] },
 );
@@ -216,9 +218,9 @@ const router = new Router(routes, {
 | | |
 |---|---|
 | `decision` | `accepted`, `refused` or `duplicate` |
-| `url` | the link as received |
+| `url` | the link, with every secret value masked |
 | `source` | `cold`, `warm`, or `null` when the router was asked directly |
-| `match` | on `accepted`: the route, its validated parameters and the door |
+| `match` | on `accepted`: the route, its validated parameters — masked too — and the door |
 | `refusal` | on `refused`: the reason and its detail |
 | `at` | when the decision was made |
 
@@ -230,6 +232,39 @@ reset route is a token arriving through a door any installed app can register.
 A hook that throws loses its event and nothing else. The decision is already
 made by then, and a logger that fails must not turn a link anyone can send into
 a crash inside a `Linking` handler.
+
+## A token is not written down
+
+A reset link is a token in a URL, and the point of writing every decision down
+is that afterwards there is a record of it. Together those two make the log a
+second copy of every token that was sent — longer-lived than the link, usually,
+and somewhere nobody meant to keep one.
+
+A parameter declared `secret` stays out of that record. The value still reaches
+`match.params`, because the screen is what the link was for. Everywhere the link
+is reported it arrives with that segment masked: the audit event, the
+`bad-parameter` detail that otherwise names the value it refused, `match.url`,
+and the repeat the intake drops before the table is asked at all.
+
+```ts
+{ name: "reset", pattern: "/reset/:token", params: { token: { kind: "uuid", secret: true } } }
+```
+
+```
+https://example.com/reset/***     accepted, and the screen still gets the token
+token=*** is not a valid uuid     bad-parameter
+```
+
+What is masked follows the shape of the link, not the reason it was refused: a
+token addressed to a host this app does not own, or arriving through a door its
+route does not open to, was a token either way. The intake still compares links
+as they arrived, so two different tokens remain two links and the second is not
+dropped as a repeat of the first. `router.mask(url)` applies the same masking to
+a link you are about to log yourself.
+
+A value drawn from a set written down in the table is not a secret in the first
+place, so `secret` together with `oneOf` throws when the router is built: the
+refusal names that set whatever the value was.
 
 ## The link that arrives too early
 
@@ -348,7 +383,7 @@ which is all a repeat-within-seconds window needs.
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default with http as its own opt-in link form, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default with http as its own opt-in link form, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat — and secret parameters masked in every record of one |
 | Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development
