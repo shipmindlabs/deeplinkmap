@@ -4,10 +4,12 @@
  */
 
 export {
+  InvalidLink,
   InvalidPolicy,
   InvalidRoute,
   Router,
   type LinkForm,
+  type LinkOptions,
   type Match,
   type ParamKind,
   type ParamSpec,

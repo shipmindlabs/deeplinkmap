@@ -124,11 +124,22 @@ export type RouterOptions<Name extends string = string> = {
   readonly now?: () => Date;
 };
 
+/** How an outbound link differs from the bare path its route describes. */
+export type LinkOptions = {
+  /** Query parameters, each declared by the route and checked like a path one. */
+  readonly query?: Readonly<Record<string, string | number>>;
+  /** Which door to build for. Defaults to the most verified one the route opens to. */
+  readonly form?: LinkForm;
+};
+
 /** The table describes routes that cannot be read, or that can never open. */
 export class InvalidRoute extends Error {}
 
 /** The host or scheme allow-list cannot mean what it says. */
 export class InvalidPolicy extends Error {}
+
+/** The requested link is not one this table could read back. */
+export class InvalidLink extends Error {}
 
 const PATTERNS: Record<ParamKind, RegExp> = {
   string: /^[^/?#]+$/,
@@ -288,6 +299,81 @@ export class Router<Name extends string = string> {
   }
 
   /**
+   * Build a link to one of these routes.
+   *
+   * A link assembled by hand is a second copy of the table written in string
+   * concatenation: it drifts when a pattern changes, and a value nobody
+   * checked on the way out is refused on the way back in — inside an email
+   * somebody has already been sent. So an outbound link comes from the table
+   * that reads it. Values pass the same specs, the route has to accept the
+   * form the link is built in, a universal link uses the first exact host and
+   * a scheme link the first declared scheme. Anything else throws
+   * `InvalidLink` here rather than being refused on arrival.
+   */
+  link(
+    name: Name,
+    params: Readonly<Record<string, string | number>> = {},
+    options: LinkOptions = {},
+  ): string {
+    const entry = this.#entries.find((candidate) => candidate.route.name === name);
+    if (!entry) throw new InvalidLink(`no route named "${name}" is in this table`);
+    const route = entry.route.name;
+
+    const form = this.#outbound(entry, options.form);
+    const origin = this.#origin(form);
+    if (origin === null) {
+      // A wildcard stands for hosts the app may not have, so it is not an
+      // address to send anybody to.
+      const missing =
+        form === "scheme"
+          ? "the router declares no scheme"
+          : form === "insecure" && !this.#allowInsecure
+            ? "the router does not allow insecure links"
+            : "the router declares no host that is not a wildcard";
+      throw new InvalidLink(
+        `no ${FORM_NAMES[form]} link to route "${route}" can be built: ${missing}`,
+      );
+    }
+
+    const spare = new Set(Object.keys(params));
+    const segments = entry.route.pattern
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => {
+        if (!segment.startsWith(":")) return segment;
+        const key = segment.slice(1);
+        spare.delete(key);
+        if (!Object.hasOwn(params, key)) {
+          throw new InvalidLink(`route "${route}" needs a value for :${key}`);
+        }
+        const raw = String(params[key]);
+        enforce(route, `:${key}`, raw, spec(entry.route.params![key]!), entry.secrets.has(key));
+        return encodeURIComponent(raw);
+      });
+    if (spare.size > 0) {
+      throw new InvalidLink(
+        `route "${route}" has no ${[...spare].map((key) => `:${key}`).join(", ")} in its pattern`,
+      );
+    }
+
+    // Declared query parameters only: an undeclared one is dropped when the
+    // link arrives, so building one builds a link that loses part of itself.
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      const declaration = entry.route.query?.[key];
+      if (!declaration) {
+        throw new InvalidLink(`route "${route}" does not declare the query parameter ?${key}`);
+      }
+      const raw = String(value);
+      enforce(route, `?${key}`, raw, spec(declaration), entry.secretQuery.has(key));
+      search.append(key, raw);
+    }
+
+    const query = search.size > 0 ? `?${search}` : "";
+    return `${origin}${segments.join("/")}${query}`;
+  }
+
+  /**
    * The link as it may be written down: every value a route declared `secret`
    * replaced by a mask. `LinkIntake` uses this for the repeats it drops, which
    * never reach the table at all.
@@ -330,6 +416,39 @@ export class Router<Name extends string = string> {
       params: covered(match.params, entry.secrets),
       query: covered(match.query, entry.secretQuery),
     };
+  }
+
+  /** The door an outbound link is built in: the caller's, checked, or the best. */
+  #outbound(entry: Entry<Name>, chosen: LinkForm | undefined): LinkForm {
+    const open = FORMS.filter((form) => entry.accepts.has(form));
+    if (chosen === undefined) {
+      // Without a choice, the most verified door this route opens to that the
+      // router can address at all.
+      return open.find((form) => this.#origin(form) !== null) ?? open[0]!;
+    }
+    if (!FORMS.includes(chosen)) {
+      throw new InvalidLink(`unknown link form ${JSON.stringify(chosen)}`);
+    }
+    if (!entry.accepts.has(chosen)) {
+      throw new InvalidLink(`route "${entry.route.name}" does not accept ${FORM_NAMES[chosen]} links`);
+    }
+    return chosen;
+  }
+
+  /**
+   * Where a link in this form starts, or null when the router has no such
+   * door: the first exact host for an http link, the first declared scheme for
+   * a custom one.
+   */
+  #origin(form: LinkForm): string | null {
+    if (form === "scheme") {
+      if (this.#schemes.length === 0) return null;
+      return `${this.#schemes[0]}://`;
+    }
+    if (form === "insecure" && !this.#allowInsecure) return null;
+    const exact = this.#hosts.find((pattern) => !pattern.wildcard);
+    if (exact === undefined) return null;
+    return `${form === "insecure" ? "http" : "https"}://${exact.host}/`;
   }
 
   #decide(url: string): Resolution<Name> {
@@ -442,6 +561,22 @@ export class Router<Name extends string = string> {
 
 function refuse(reason: Refusal["reason"], detail: string, url: string): Resolution<never> {
   return { ok: false, refusal: { reason, detail, url } };
+}
+
+/**
+ * A value on its way out is checked by the spec that would refuse it on the
+ * way back in: a link nobody can read is still a link somebody was sent.
+ */
+function enforce(
+  route: string,
+  where: string,
+  raw: string,
+  declaration: ParamSpec,
+  hidden: boolean,
+): void {
+  if (validate(raw, declaration) !== null) return;
+  const got = hidden ? MASK : JSON.stringify(raw);
+  throw new InvalidLink(`route "${route}" ${where}=${got} is not ${describe(declaration)}`);
 }
 
 /** The same values, with the secret ones replaced. */
