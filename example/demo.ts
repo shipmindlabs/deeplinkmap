@@ -70,6 +70,27 @@ for (const url of arriving) {
   }
 }
 
+console.log("\nand links built from the same table");
+const outbound = [
+  router.link("order", { id: 4711 }),
+  router.link("article", { slug: "hello-world" }, { query: { ref: "newsletter" } }),
+  router.link("article", { slug: "hello-world" }, { form: "scheme" }),
+  router.link("receipt", { id: receipt, format: "pdf" }),
+  router.link("home"),
+];
+
+for (const url of outbound) {
+  const resolution = router.resolve(url);
+  const read = resolution.ok ? `reads back as ${resolution.match.name}` : "would be refused";
+  console.log(`  ${url.padEnd(52)} ${read}`);
+}
+
+try {
+  router.link("order", { id: 0 });
+} catch (error) {
+  console.log(`  refused here, not in an inbox: ${(error as Error).message}`);
+}
+
 console.log("\na link arriving before the app is ready");
 const pending = new PendingLink();
 const cold = router.resolve("https://example.com/order/4711");

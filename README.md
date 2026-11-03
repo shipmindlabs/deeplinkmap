@@ -166,6 +166,46 @@ const resumed = pending.take();
 if (resumed) navigate(resumed.name, resumed.params);
 ```
 
+## Links built from the same table
+
+A link assembled by hand is a second copy of the table written in string
+concatenation. It drifts when a pattern changes, and a value nobody checked on
+the way out is refused on the way back in — inside an email somebody has already
+been sent. `router.link()` builds one from the table that reads it.
+
+```ts
+router.link("order", { id: 4711 });
+// https://example.com/order/4711
+
+router.link("article", { slug: "hello-world" }, { query: { ref: "newsletter" } });
+// https://example.com/article/hello-world?ref=newsletter
+
+router.link("article", { slug: "hello-world" }, { form: "scheme" });
+// myapp://article/hello-world
+
+router.link("order", { id: 0 });   // throws InvalidLink: :id is a number from 1
+```
+
+| | |
+|---|---|
+| `name` | a route in this table |
+| `params` | every placeholder in its pattern, and nothing else |
+| `query` | declared query parameters, checked like path ones |
+| `form` | which door to build for; defaults to the most verified one the route opens to |
+
+Values pass the same specs that would refuse them on arrival, and the route has
+to accept the form the link is built in: a reset route declining custom schemes
+cannot be handed a `myapp://` link to send. A universal link uses the first
+exact host in the allow-list and a scheme link the first declared scheme — a
+wildcard stands for hosts the app may not have, so it is not an address to send
+anyone. Query parameters are allow-listed here too, because an undeclared one is
+dropped on arrival and a link that loses part of itself is worse than one that
+was never built.
+
+Everything else throws `InvalidLink` where the link is built rather than being
+refused in somebody's inbox: `resolve(link(...))` is the same route and the same
+parameters, or there was no link to send.
+
 ## One door, cold or warm
 
 A running app is handed links by an event; a starting app has to ask for the one
@@ -364,9 +404,6 @@ URLs.
 **Not a navigator.** It turns a URL into a name and validated parameters. Where
 that name goes is your navigation library's business.
 
-**Not link generation.** Building outbound links from a route name is the
-obvious next thing and is not here yet.
-
 **Not app-side link verification.** Whether iOS or Android will hand your app a
 given universal link at all is decided by `apple-app-site-association` and
 `assetlinks.json`, on your server. This validates what does arrive, and lets a
@@ -383,8 +420,8 @@ which is all a repeat-within-seconds window needs.
 
 | | |
 |---|---|
-| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default with http as its own opt-in link form, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat — and secret parameters masked in every record of one |
-| Not yet | outbound link building, optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
+| Implemented | typed path parameters with four kinds, length bounds, numeric ranges and value sets, allow-listed query parameters, host allow-list with single-label wildcards, https by default with http as its own opt-in link form, per-route link-form policy, refusal reasons, build-time checking of the table and the allow-lists, single-use pending links with a checked lifetime, one intake for cold starts and `url` events with a repeat window, an audit hook carrying every decision — accepted, refused, or dropped as a repeat — secret parameters masked in every record of one, and outbound links built from the table that reads them |
+| Not yet | optional and wildcard segments, per-route rate limiting, a React hook wrapping `Linking` |
 
 ## Development
 
