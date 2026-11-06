@@ -626,11 +626,13 @@ function overHttp(parsed: URL): boolean {
 
 /**
  * The path a pattern is matched against. For a custom scheme,
- * "myapp://order/7" puts "order" in the host, so the host is a segment.
+ * "myapp://order/7" puts "order" in the host, so the host is a segment — with
+ * its port, because "myapp://order:5/7" names no segment this table has and
+ * dropping the port would route it as though it named one.
  */
 function pathOf(parsed: URL): string {
   if (overHttp(parsed)) return parsed.pathname;
-  return "/" + [parsed.hostname, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/");
+  return "/" + [parsed.host, parsed.pathname.replace(/^\//, "")].filter(Boolean).join("/");
 }
 
 function accepted(forms: readonly LinkForm[], where: string): ReadonlySet<LinkForm> {
